@@ -49,16 +49,16 @@ const (
 var defaultS2SInvalideMetadataHandleOption = common.DefaultInvalidMetadataHandleOption
 
 func (s *cmdIntegrationSuite) SetUpSuite(c *chk.C) {
-	s3Client, err := createS3ClientWithMinio(createS3ResOptions{})
-  
-	// If S3 credentials aren't supplied, we're probably only trying to run Azure tests.
-	// As such, gracefully return here instead of cancelling every test because we couldn't clean up S3.
-	if err != nil {
-		return
-	}
+	//s3Client, err := createS3ClientWithMinio(createS3ResOptions{})
+	//
+	//// If S3 credentials aren't supplied, we're probably only trying to run Azure tests.
+	//// As such, gracefully return here instead of cancelling every test because we couldn't clean up S3.
+	//if err != nil {
+	//	return
+	//}
 
 	// Cleanup the source S3 account
-	cleanS3Account(c, s3Client)
+	//cleanS3Account(c, s3Client)
 }
 
 func getDefaultRawCopyInput(src, dst string) rawCopyCmdArgs {

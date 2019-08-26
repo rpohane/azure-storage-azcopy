@@ -23,15 +23,16 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"github.com/Azure/azure-pipeline-go/pipeline"
-	"github.com/Azure/azure-storage-azcopy/common"
-	"github.com/Azure/azure-storage-azcopy/ste"
-	"github.com/Azure/azure-storage-blob-go/azblob"
 	"net/url"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
+
+	"github.com/Azure/azure-pipeline-go/pipeline"
+	"github.com/Azure/azure-storage-azcopy/common"
+	"github.com/Azure/azure-storage-azcopy/ste"
+	"github.com/Azure/azure-storage-blob-go/azblob"
 )
 
 // extract the right info from cooked arguments and instantiate a generic copy transfer processor from it
@@ -169,7 +170,7 @@ func newSyncBlobDeleteProcessor(cca *cookedSyncCmdArgs) (*interactiveDeleteProce
 	rawURL, err := url.Parse(cca.destination)
 	if err != nil {
 		return nil, err
-	} else if err == nil && cca.destinationSAS != "" {
+	} else if cca.destinationSAS != "" {
 		copyHandlerUtil{}.appendQueryParamToUrl(rawURL, cca.destinationSAS)
 	}
 

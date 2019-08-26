@@ -23,7 +23,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"github.com/Azure/azure-storage-azcopy/azbfs"
 	"io/ioutil"
 	"net/url"
 	"os"
@@ -31,12 +30,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Azure/azure-storage-azcopy/azbfs"
+	minio "github.com/minio/minio-go"
+
 	"github.com/Azure/azure-storage-azcopy/common"
 	"github.com/Azure/azure-storage-blob-go/azblob"
 	"github.com/Azure/azure-storage-file-go/azfile"
 	chk "gopkg.in/check.v1"
-
-	"github.com/minio/minio-go"
 )
 
 const defaultFileSize = 1024
@@ -590,6 +590,10 @@ func validateUploadTransfersAreScheduled(c *chk.C, sourcePrefix string, destinat
 
 func validateDownloadTransfersAreScheduled(c *chk.C, sourcePrefix string, destinationPrefix string, expectedTransfers []string, mockedRPC interceptor) {
 	validateCopyTransfersAreScheduled(c, true, false, sourcePrefix, destinationPrefix, expectedTransfers, mockedRPC)
+}
+
+func validateS2SSyncTransfersAreScheduled(c *chk.C, sourcePrefix string, destinationPrefix string, expectedTransfers []string, mockedRPC interceptor) {
+	validateCopyTransfersAreScheduled(c, true, true, sourcePrefix, destinationPrefix, expectedTransfers, mockedRPC)
 }
 
 func validateCopyTransfersAreScheduled(c *chk.C, isSrcEncoded bool, isDstEncoded bool, sourcePrefix string, destinationPrefix string, expectedTransfers []string, mockedRPC interceptor) {

@@ -24,8 +24,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/Azure/azure-pipeline-go/pipeline"
 	"time"
+
+	"github.com/Azure/azure-pipeline-go/pipeline"
 
 	"net/url"
 	"strings"
@@ -103,6 +104,9 @@ func (raw *rawSyncCmdArgs) cook() (cookedSyncCmdArgs, error) {
 	} else if cooked.fromTo == common.EFromTo.BlobLocal() {
 		cooked.source, cooked.sourceSAS = raw.separateSasFromURL(raw.src)
 		cooked.destination = cleanLocalPath(raw.dst)
+	} else if cooked.fromTo == common.EFromTo.BlobBlob() {
+		cooked.source, cooked.sourceSAS = raw.separateSasFromURL(raw.src)
+		cooked.destination, cooked.destinationSAS = raw.separateSasFromURL(raw.dst)
 	} else {
 		return cooked, fmt.Errorf("source '%s' / destination '%s' combination '%s' not supported for sync command ", raw.src, raw.dst, cooked.fromTo)
 	}
@@ -330,13 +334,13 @@ func (cca *cookedSyncCmdArgs) getJsonOfSyncJobSummary(summary common.ListSyncJob
 
 func (cca *cookedSyncCmdArgs) ReportProgressOrExit(lcm common.LifecycleMgr) {
 	duration := time.Now().Sub(cca.jobStartTime) // report the total run time of the job
-	var summary common.ListSyncJobSummaryResponse
+	var summary common.ListJobSummaryResponse
 	var throughput float64
 	var jobDone bool
 
 	// fetch a job status and compute throughput if the first part was dispatched
 	if cca.firstPartOrdered() {
-		Rpc(common.ERpcCmd.ListSyncJobSummary(), &cca.jobID, &summary)
+		Rpc(common.ERpcCmd.ListJobSummary(), &cca.jobID, &summary)
 		jobDone = summary.JobStatus.IsJobDone()
 
 		// compute the average throughput for the last time interval
@@ -358,14 +362,14 @@ func (cca *cookedSyncCmdArgs) ReportProgressOrExit(lcm common.LifecycleMgr) {
 
 	if jobDone {
 		exitCode := common.EExitCode.Success()
-		if summary.CopyTransfersFailed+summary.DeleteTransfersFailed > 0 {
+		if summary.TransfersFailed > 0 {
 			exitCode = common.EExitCode.Error()
 		}
 
 		lcm.Exit(func(format common.OutputFormat) string {
-			if format == common.EOutputFormat.Json() {
-				return cca.getJsonOfSyncJobSummary(summary)
-			}
+			//if format == common.EOutputFormat.Json() {
+			//	return cca.getJsonOfSyncJobSummary(summary)
+			//}
 
 			output := fmt.Sprintf(
 				`
@@ -385,9 +389,9 @@ Final Job Status: %v
 				atomic.LoadUint64(&cca.atomicSourceFilesScanned),
 				atomic.LoadUint64(&cca.atomicDestinationFilesScanned),
 				ste.ToFixed(duration.Minutes(), 4),
-				summary.CopyTotalTransfers,
-				summary.CopyTransfersCompleted,
-				summary.CopyTransfersFailed,
+				summary.TotalTransfers,
+				summary.TransfersCompleted,
+				summary.TransfersFailed,
 				cca.atomicDeletionCount,
 				summary.TotalBytesTransferred,
 				summary.TotalBytesEnumerated,
@@ -403,19 +407,19 @@ Final Job Status: %v
 	}
 
 	lcm.Progress(func(format common.OutputFormat) string {
-		if format == common.EOutputFormat.Json() {
-			return cca.getJsonOfSyncJobSummary(summary)
-		}
+		//if format == common.EOutputFormat.Json() {
+		//	return cca.getJsonOfSyncJobSummary(summary)
+		//}
 
 		// indicate whether constrained by disk or not
 		perfString, diskString := getPerfDisplayText(summary.PerfStrings, summary.PerfConstraint, duration)
 
 		return fmt.Sprintf("%.1f %%, %v Done, %v Failed, %v Pending, %v Total%s, 2-sec Throughput (Mb/s): %v%s",
 			summary.PercentComplete,
-			summary.CopyTransfersCompleted+summary.DeleteTransfersCompleted,
-			summary.CopyTransfersFailed+summary.DeleteTransfersFailed,
-			summary.CopyTotalTransfers+summary.DeleteTotalTransfers-(summary.CopyTransfersCompleted+summary.DeleteTransfersCompleted+summary.CopyTransfersFailed+summary.DeleteTransfersFailed),
-			summary.CopyTotalTransfers+summary.DeleteTotalTransfers, perfString, ste.ToFixed(throughput, 4), diskString)
+			summary.TransfersCompleted,
+			summary.TransfersFailed,
+			summary.TotalTransfers-summary.TransfersCompleted-summary.TransfersFailed,
+			summary.TotalTransfers, perfString, ste.ToFixed(throughput, 4), diskString)
 	})
 }
 
@@ -452,21 +456,9 @@ func (cca *cookedSyncCmdArgs) process() (err error) {
 		}
 	}
 
-	var enumerator *syncEnumerator
-
-	switch cca.fromTo {
-	case common.EFromTo.LocalBlob():
-		enumerator, err = newSyncUploadEnumerator(cca)
-		if err != nil {
-			return err
-		}
-	case common.EFromTo.BlobLocal():
-		enumerator, err = newSyncDownloadEnumerator(cca)
-		if err != nil {
-			return err
-		}
-	default:
-		return fmt.Errorf("the given source/destination pair is currently not supported")
+	enumerator, err := cca.initEnumerator(ctx)
+	if err != nil {
+		return err
 	}
 
 	// trigger the progress reporting

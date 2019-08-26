@@ -56,8 +56,8 @@ func (s *cmdIntegrationSuite) SetUpSuite(c *chk.C) {
 	//if err != nil {
 	//	return
 	//}
-
-	// Cleanup the source S3 account
+	//
+	//// Cleanup the source S3 account
 	//cleanS3Account(c, s3Client)
 }
 

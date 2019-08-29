@@ -9,10 +9,12 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/Azure/azure-storage-blob-go/azblob"
 
 	"github.com/Azure/azure-storage-azcopy/common"
+	"github.com/Azure/azure-storage-azcopy/ste"
 )
 
 func (cca *cookedCopyCmdArgs) initEnumerator(jobPartOrder common.CopyJobPartOrderRequest, ctx context.Context) (*copyEnumerator, error) {
@@ -44,13 +46,20 @@ func (cca *cookedCopyCmdArgs) initEnumerator(jobPartOrder common.CopyJobPartOrde
 		src = srcURL.String()
 	}
 
-	var err error
+	var (
+		err      error
+		isPublic bool
+	)
 	srcCredInfo := common.CredentialInfo{}
 
-	if srcCredInfo, err = getCredentialInfoForLocation(ctx, cca.fromTo.From(), cca.source, cca.sourceSAS, true); err != nil {
+	if srcCredInfo, isPublic, err = getCredentialInfoForLocation(ctx, cca.fromTo.From(), cca.source, cca.sourceSAS, true); err != nil {
 		return nil, err
-	} else if cca.fromTo.From() != common.ELocation.Local() && cca.fromTo.To() != common.ELocation.Local() && srcCredInfo.CredentialType == common.ECredentialType.OAuthToken() {
-		return nil, errors.New("a SAS token (or S3 access key) is required as a part of the source in S2S transfers")
+		// If S2S and source takes OAuthToken as its cred type (OR) source takes anonymous as its cred type, but it's not public and there's no SAS
+	} else if cca.fromTo.From() != common.ELocation.Local() && cca.fromTo.To() != common.ELocation.Local() &&
+		(srcCredInfo.CredentialType == common.ECredentialType.OAuthToken() ||
+			(srcCredInfo.CredentialType == common.ECredentialType.Anonymous() && !isPublic && cca.sourceSAS == "")) {
+		// TODO: Generate a SAS token if it's blob -> *
+		return nil, errors.New("a SAS token (or S3 access key) is required as a part of the source in S2S transfers, unless the source is a public resource")
 	}
 
 	traverser, err = initResourceTraverser(src, cca.fromTo.From(), &ctx, &srcCredInfo, &cca.followSymlinks, cca.listOfFilesChannel, cca.recursive, func() {})
@@ -83,7 +92,7 @@ func (cca *cookedCopyCmdArgs) initEnumerator(jobPartOrder common.CopyJobPartOrde
 		return nil, err
 	}
 
-	if srcLevel == 2 && dstLevel == 0 {
+	if srcLevel == ELocationLevel.Object() && dstLevel == ELocationLevel.Service() {
 		return nil, errors.New("cannot transfer files/folders to a service")
 	}
 
@@ -92,6 +101,7 @@ func (cca *cookedCopyCmdArgs) initEnumerator(jobPartOrder common.CopyJobPartOrde
 		cca.stripTopDir = true
 	}
 
+	var logDstContainerCreateFailureOnce sync.Once
 	filters := cca.initModularFilters()
 	processor := func(object storedObject) error {
 		// Start by resolving the name and creating the container
@@ -100,16 +110,22 @@ func (cca *cookedCopyCmdArgs) initEnumerator(jobPartOrder common.CopyJobPartOrde
 
 			if err != nil {
 				glcm.Error(err.Error())
-				return errors.New("failed to add transfers from service, some of the buckets have invalid names for Azure. " +
+				return errors.New("failed to add transfers from service, some of the buckets have invalid names for the destination. " +
 					"Please exclude the invalid buckets in service to service copy, and copy them using bucket to container/share/filesystem copy " +
 					"with customized destination name after the service to service copy finished")
 			}
 
 			object.dstContainerName = cName
+			// The container only ends up getting created if it does not already exist.
 			err = cca.createDstContainer(cName, dst, ctx)
 
-			if err != nil {
-				return fmt.Errorf("failed to create destination container: %s", err)
+			// if JobsAdmin is nil, we're probably in testing mode.
+			// As a result, container creation failures are expected as we don't give the SAS tokens adequate permissions.
+			if err != nil && ste.JobsAdmin != nil {
+				logDstContainerCreateFailureOnce.Do(func() {
+					glcm.Info("Failed to create one or more destination container(s). Your transfers may still succeed if the container already exists.")
+				})
+				ste.JobsAdmin.LogToJobLog(fmt.Sprintf("failed to initialize destination container %s; the transfer will continue (but be wary it may fail): %s", cName, err))
 			}
 		}
 
@@ -157,7 +173,7 @@ func (cca *cookedCopyCmdArgs) isDestDirectory(dst string, ctx *context.Context) 
 		return false
 	}
 
-	if dstCredInfo, err = getCredentialInfoForLocation(*ctx, cca.fromTo.To(), cca.destination, cca.destinationSAS, true); err != nil {
+	if dstCredInfo, _, err = getCredentialInfoForLocation(*ctx, cca.fromTo.To(), cca.destination, cca.destinationSAS, true); err != nil {
 		return false
 	}
 
@@ -224,7 +240,7 @@ func (cca *cookedCopyCmdArgs) createDstContainer(containerName, dstWithSAS strin
 
 	dstCredInfo := common.CredentialInfo{}
 
-	if dstCredInfo, err = getCredentialInfoForLocation(ctx, cca.fromTo.From(), cca.source, cca.destinationSAS, true); err != nil {
+	if dstCredInfo, _, err = getCredentialInfoForLocation(ctx, cca.fromTo.To(), cca.destination, cca.destinationSAS, false); err != nil {
 		return err
 	}
 
@@ -253,6 +269,12 @@ func (cca *cookedCopyCmdArgs) createDstContainer(containerName, dstWithSAS strin
 
 		bsu := azblob.NewServiceURL(*dstURL, dstPipeline)
 		bcu := bsu.NewContainerURL(containerName)
+		_, err = bcu.GetProperties(ctx, azblob.LeaseAccessConditions{})
+
+		if err == nil {
+			return err // Container already exists, return gracefully
+		}
+
 		_, err = bcu.Create(ctx, azblob.Metadata{}, azblob.PublicAccessNone)
 
 		if stgErr, ok := err.(azblob.StorageError); ok {
